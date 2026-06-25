@@ -1,0 +1,6 @@
+{
+  "name": "Dashboard de Monitoreo de Soporte",
+  "description": "Sistema de monitoreo, KPIs y métricas de soporte técnico para Effective Computer Solutions",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
