@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { TicketRecord } from "../types";
 import { 
   ArrowUpDown, 
@@ -12,6 +12,9 @@ import {
   HelpCircle
 } from "lucide-react";
 import * as XLSX from "xlsx";
+import { TicketLink } from "./TicketLink";
+import { isUnanswered, formatMinutes, statusColor } from "../utils/ticketHelpers";
+import { zohoTicketUrl } from "../utils/zoho";
 
 interface CriticalTicketsTableProps {
   filteredTickets: TicketRecord[];
@@ -136,6 +139,13 @@ export function CriticalTicketsTable({ filteredTickets }: CriticalTicketsTablePr
     };
   };
 
+  // Demora real: si no tiene respuesta, tiempo de espera desde la creación; si ya se respondió,
+  // tiempo de primera respuesta en horario laboral.
+  const realDelayMinutes = (t: TicketRecord) =>
+    isUnanswered(t)
+      ? formatCalendarDelay(t["Hora de creación (Ticket)"] || "", "").minutes
+      : Number(t["Tiempo de primera respuesta en horario laboral"]) || 0;
+
   // Filter and sort tickets
   const processedTickets = useMemo(() => {
     // 1. Text search filter
@@ -172,8 +182,8 @@ export function CriticalTicketsTable({ filteredTickets }: CriticalTicketsTablePr
         valB = isNaN(timeB) ? 0 : timeB;
       }
       else if (sortField === "Demora Calendario (Real)") {
-        const delayA = formatCalendarDelay(a["Hora de creación (Ticket)"] || "", a["Hora de responder"] || "").minutes;
-        const delayB = formatCalendarDelay(b["Hora de creación (Ticket)"] || "", b["Hora de responder"] || "").minutes;
+        const delayA = realDelayMinutes(a);
+        const delayB = realDelayMinutes(b);
         valA = delayA;
         valB = delayB;
       }
@@ -189,6 +199,9 @@ export function CriticalTicketsTable({ filteredTickets }: CriticalTicketsTablePr
 
     return results;
   }, [filteredTickets, searchQuery, sortField, sortDirection]);
+
+  // Al cambiar el filtro de propietario se vuelve a la primera página
+  useEffect(() => { setCurrentPage(1); }, [filteredTickets]);
 
   // Paginated records
   const totalRecords = processedTickets.length;
@@ -250,6 +263,7 @@ export function CriticalTicketsTable({ filteredTickets }: CriticalTicketsTablePr
     // Structure data exactly for Excel
     const dataToExport = processedTickets.map(t => ({
       "ID de Ticket": t["ID de Ticket"],
+      "Enlace Zoho": zohoTicketUrl(t),
       "Nombre de Cuenta": t["Nombre de Cuenta"],
       "Asunto": t["Asunto"],
       "Prioridad": t["Prioridad (Ticket)"],
@@ -277,10 +291,10 @@ export function CriticalTicketsTable({ filteredTickets }: CriticalTicketsTablePr
         <div>
           <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-amber-500 animate-bounce" />
-            Informe de Casos Críticos y Atrasados
+            Informe Detallado de Casos
           </h3>
           <p className="text-[11px] text-gray-500 mt-0.5">
-            Muestra el listado de casos ordenados por el mayor retraso en la primera respuesta laboral.
+            Todos los casos del filtro actual, ordenados por la mayor demora de primera respuesta. Clic en el ticket para abrirlo en Zoho Desk.
           </p>
         </div>
 
@@ -464,10 +478,16 @@ export function CriticalTicketsTable({ filteredTickets }: CriticalTicketsTablePr
                 }
 
                 // Calculate the real elapsed calendar time
-                const calDelay = formatCalendarDelay(
-                  ticket["Hora de creación (Ticket)"] || "",
-                  ticket["Hora de responder"] || ""
-                );
+                const unansweredRow = isUnanswered(ticket);
+                const calDelay = unansweredRow
+                  ? formatCalendarDelay(ticket["Hora de creación (Ticket)"] || "", "")
+                  : {
+                      text: `1ª rpta: ${formatMinutes(minutesVal)} (lab.)`,
+                      isCritical: false,
+                      isHigh: minutesVal >= 60 * 24,
+                      minutes: minutesVal,
+                      isAnswered: true,
+                    };
 
                 let calBadgeColor = "text-gray-700 bg-gray-50 border border-gray-150";
                 if (calDelay.isCritical) {
@@ -484,8 +504,8 @@ export function CriticalTicketsTable({ filteredTickets }: CriticalTicketsTablePr
                     className="hover:bg-slate-50/70 transition-colors"
                   >
                     {/* ID */}
-                    <td className="px-4 py-2.5 font-mono text-xs font-bold text-[#005bbf] whitespace-nowrap">
-                      {ticket["ID de Ticket"]}
+                    <td className="px-4 py-2.5 text-xs text-[#005bbf] whitespace-nowrap">
+                      <TicketLink ticket={ticket} />
                     </td>
                     
                     {/* Nombre Cuenta */}
@@ -495,7 +515,9 @@ export function CriticalTicketsTable({ filteredTickets }: CriticalTicketsTablePr
                     
                     {/* Asunto */}
                     <td className="px-4 py-2.5 text-gray-700 truncate max-w-xs" title={ticket["Asunto"]}>
-                      {ticket["Asunto"]}
+                      <a href={zohoTicketUrl(ticket)} target="_blank" rel="noopener noreferrer" className="hover:text-[#005bbf] hover:underline">
+                        {ticket["Asunto"]}
+                      </a>
                     </td>
                     
                     {/* Prioridad */}
@@ -507,7 +529,8 @@ export function CriticalTicketsTable({ filteredTickets }: CriticalTicketsTablePr
                     
                     {/* Estado */}
                     <td className="px-4 py-2.5 text-center whitespace-nowrap">
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] uppercase ${statusBadge}`}>
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] uppercase ${statusBadge}`}>
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: statusColor(ticket["Estado (Ticket)"] || "") }} />
                         {ticket["Estado (Ticket)"]}
                       </span>
                     </td>
@@ -523,9 +546,9 @@ export function CriticalTicketsTable({ filteredTickets }: CriticalTicketsTablePr
                         <span className="text-gray-500 font-medium">
                           <strong className="text-gray-700">Creado:</strong> {ticket["Hora de creación (Ticket)"] || "N/D"}
                         </span>
-                        {ticket["Hora de responder"] ? (
+                        {!isUnanswered(ticket) ? (
                           <span className="text-emerald-600 font-semibold">
-                            <strong className="text-emerald-700">Rpta:</strong> {ticket["Hora de responder"]}
+                            <strong className="text-emerald-700">Últ. rpta agente:</strong> {ticket["Tiempo de respuesta del agente"] || `${ticket["Número de respuestas"]} respuestas`}
                           </span>
                         ) : (
                           <span className="text-rose-500 font-bold animate-pulse">

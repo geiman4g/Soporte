@@ -1,10 +1,15 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Header } from "./components/Header";
 import { UploadZone } from "./components/UploadZone";
 import { FilterSection } from "./components/FilterSection";
 import { KPICards } from "./components/KPICards";
 import { DashboardCharts } from "./components/DashboardCharts";
 import { CriticalTicketsTable } from "./components/CriticalTicketsTable";
+import { TrackingCharts } from "./components/TrackingCharts";
+import { TicketDetailDrawer } from "./components/TicketDetailDrawer";
+import { ZohoSyncPanel } from "./components/ZohoSyncPanel";
+import { Selection } from "./utils/selection";
+import { fetchZohoReport, getLastSync } from "./utils/zoho";
 import { INITIAL_MOCK_DATA } from "./mockData";
 import { TicketRecord } from "./types";
 import { 
@@ -23,44 +28,60 @@ export default function App() {
   const [tickets, setTickets] = useState<TicketRecord[]>([]);
   const [selectedOwners, setSelectedOwners] = useState<string[]>([]);
   const [isResetting, setIsResetting] = useState(false);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [lastSync, setLastSync] = useState<string | null>(getLastSync());
+  const [syncing, setSyncing] = useState(false);
+  const ticketsRef = useRef<TicketRecord[]>([]);
+  useEffect(() => { ticketsRef.current = tickets; }, [tickets]);
 
-  // 1. Initial State Load - Read from localStorage or pre-populate with mock data
+  const ownersIn = (list: TicketRecord[]) =>
+    Array.from(new Set(list.map(t => t["Propietario de Ticket"] || "Sin Propietario")));
+
+  const saveCache = (list: TicketRecord[]) => {
+    try { localStorage.setItem("ecs_support_tickets", JSON.stringify(list)); } catch { /* sin almacenamiento */ }
+  };
+
+  // 1. Carga inicial: datos guardados en este navegador; si no hay, se intenta traer de Zoho Desk.
   useEffect(() => {
-    const cached = localStorage.getItem("ecs_support_tickets");
+    let cached: string | null = null;
+    try { cached = localStorage.getItem("ecs_support_tickets"); } catch { /* sin almacenamiento */ }
     if (cached) {
       try {
         const parsed = JSON.parse(cached) as TicketRecord[];
         setTickets(parsed);
-        
-        // Auto-select all unique owners by default
-        const uniqueOwners = Array.from(new Set(parsed.map(t => t["Propietario de Ticket"] || "Sin Propietario")));
-        setSelectedOwners(uniqueOwners);
+        setSelectedOwners(ownersIn(parsed));
+        return;
       } catch (err) {
         console.error("Error parsing cached ticket data:", err);
-        loadDefaultMockData();
       }
-    } else {
-      loadDefaultMockData();
     }
+    setSyncing(true);
+    fetchZohoReport()
+      .then(r => handleDataLoaded(r.tickets, r.fetchedAt))
+      .catch(() => { /* sin servicio o sin clave: queda el estado vacío con el botón de actualizar */ })
+      .finally(() => setSyncing(false));
   }, []);
 
   const loadDefaultMockData = () => {
     setTickets(INITIAL_MOCK_DATA);
-    localStorage.setItem("ecs_support_tickets", JSON.stringify(INITIAL_MOCK_DATA));
-    
-    // Auto-select all unique owners by default
-    const uniqueOwners = Array.from(new Set(INITIAL_MOCK_DATA.map(t => t["Propietario de Ticket"])));
-    setSelectedOwners(uniqueOwners);
+    saveCache(INITIAL_MOCK_DATA);
+    setSelectedOwners(ownersIn(INITIAL_MOCK_DATA));
   };
 
-  // Save changes to localStorage whenever tickets change
-  const handleDataLoaded = (newTickets: TicketRecord[]) => {
+  // Al cargar datos nuevos se conserva el filtro de propietario que el usuario tenía seleccionado.
+  const handleDataLoaded = (newTickets: TicketRecord[], fetchedAt?: string) => {
+    const newOwners = ownersIn(newTickets);
+    const prevOwners = ownersIn(ticketsRef.current);
+    setSelectedOwners(current => {
+      const hadAll = prevOwners.length === 0 || prevOwners.every(o => current.includes(o));
+      if (hadAll) return newOwners;
+      const kept = current.filter(o => newOwners.includes(o));
+      return kept.length ? kept : newOwners;
+    });
+    ticketsRef.current = newTickets;
     setTickets(newTickets);
-    localStorage.setItem("ecs_support_tickets", JSON.stringify(newTickets));
-    
-    // Reset selected owners to contain all unique owners in the newly uploaded file
-    const uniqueOwners = Array.from(new Set(newTickets.map(t => t["Propietario de Ticket"] || "Sin Propietario")));
-    setSelectedOwners(uniqueOwners);
+    saveCache(newTickets);
+    if (fetchedAt) setLastSync(fetchedAt);
   };
 
   const handleClearData = () => {
@@ -68,10 +89,13 @@ export default function App() {
     setTimeout(() => {
       setTickets([]);
       setSelectedOwners([]);
-      localStorage.removeItem("ecs_support_tickets");
+      setSelection(null);
+      try { localStorage.removeItem("ecs_support_tickets"); } catch { /* sin almacenamiento */ }
       setIsResetting(false);
     }, 450);
   };
+
+  const totalOwners = useMemo(() => ownersIn(tickets).length, [tickets]);
 
   // 2. Perform filtering based on the Mandatory support owner global filter
   const filteredTickets = useMemo(() => {
@@ -106,7 +130,7 @@ export default function App() {
             </h2>
             <p className="text-xs text-blue-100 max-w-2xl">
               Análisis interactivo de rendimiento para <strong className="text-white">Effective Computer Solutions</strong>. 
-              Sube y audita reportes periódicos de soporte técnico, valida niveles de servicio, demoras de primera respuesta laboral, y gestiona picos de casos críticos.
+              Actualiza desde Zoho Desk o sube reportes de soporte técnico, valida niveles de servicio, demoras de primera respuesta laboral, y gestiona picos de casos críticos.
             </p>
           </div>
           <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/10 text-xs self-stretch md:self-auto flex flex-col justify-center">
@@ -117,10 +141,13 @@ export default function App() {
           </div>
         </div>
 
+        {/* Actualización en vivo desde Zoho Desk */}
+        <ZohoSyncPanel onDataLoaded={handleDataLoaded} lastSync={lastSync} syncing={syncing} setSyncing={setSyncing} />
+
         {/* Data Upload and Reset Actions */}
         <div className="grid grid-cols-1 gap-6">
           <UploadZone 
-            onDataLoaded={handleDataLoaded} 
+            onDataLoaded={(d) => handleDataLoaded(d)} 
             onClearData={handleClearData} 
             dataCount={tickets.length}
           />
@@ -146,7 +173,7 @@ export default function App() {
             <div className="space-y-1">
               <h3 className="text-base font-bold text-gray-900">La Base de Datos está Vacía</h3>
               <p className="text-xs text-gray-500 max-w-sm mx-auto">
-                No hay registros cargados. Sube un archivo Excel (.xlsx) o descarga la plantilla de prueba para ver el dashboard activo.
+                {syncing ? "Consultando Zoho Desk..." : "No hay registros cargados. Usa «Actualizar desde Zoho Desk» o sube un archivo Excel (.xlsx)."}
               </p>
             </div>
             <button
@@ -167,7 +194,7 @@ export default function App() {
                 <Database className="w-3.5 h-3.5 text-gray-400" />
                 Métricas Clave y KPIs Globales
               </h3>
-              <KPICards filteredTickets={filteredTickets} />
+              <KPICards filteredTickets={filteredTickets} onSelect={setSelection} />
             </section>
 
             {/* 2. Charts and Warnings */}
@@ -176,7 +203,16 @@ export default function App() {
                 <BarChart3 className="w-3.5 h-3.5 text-gray-400" />
                 Gráficos de Análisis y Criticidad
               </h3>
-              <DashboardCharts filteredTickets={filteredTickets} />
+              <DashboardCharts filteredTickets={filteredTickets} onSelect={setSelection} />
+            </section>
+
+            {/* 2b. Seguimiento operativo */}
+            <section className="space-y-3">
+              <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                <BarChart3 className="w-3.5 h-3.5 text-gray-400" />
+                Seguimiento por Estado, Propietario, Antigüedad y SLA
+              </h3>
+              <TrackingCharts filteredTickets={filteredTickets} onSelect={setSelection} />
             </section>
 
             {/* 3. Detailed Exportable Table */}
@@ -190,6 +226,15 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Detalle de casos al hacer clic en cualquier gráfica */}
+      <TicketDetailDrawer
+        selection={selection}
+        filteredTickets={filteredTickets}
+        selectedOwnersCount={selectedOwners.length}
+        totalOwnersCount={totalOwners}
+        onClose={() => setSelection(null)}
+      />
 
       {/* Simple Professional Footer */}
       <footer className="bg-white border-t border-gray-200 py-6 mt-12 text-center text-xs text-gray-400">

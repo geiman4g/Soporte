@@ -16,3 +16,6 @@ body {
   background-color: #f8f9fa;
   color: #191c1d;
 }
+
+/* Sin marco de foco negro al hacer clic en las gráficas */
+.recharts-wrapper:focus, .recharts-surface:focus, .recharts-wrapper *:focus { outline: none; }

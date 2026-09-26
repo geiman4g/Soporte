@@ -17,6 +17,18 @@ export interface TicketRecord {
   "Tiempo total de respuesta en horario laboral": string | number; // in minutes
   "Número de respuestas": string | number;
   "Hora de responder": string;
+  /** ID interno de Zoho Desk (para abrir el ticket). Opcional en archivos cargados manualmente. */
+  zohoId?: string;
+  // ---- Datos adicionales obtenidos con la API de Zoho Desk (opcionales) ----
+  "Contacto"?: string;
+  "Correo del contacto"?: string;
+  "Canal"?: string;
+  "Última actividad"?: string;          // modifiedTime
+  "Última respuesta del cliente"?: string; // customerResponseTime
+  "Último mensaje de"?: string;          // "Cliente" | "Agente"
+  "Fecha de vencimiento"?: string;       // dueDate
+  "Vencido"?: boolean;                   // isOverDue
+  "Número de hilos"?: number;            // threadCount
 }
 
 export interface MetricCardData {

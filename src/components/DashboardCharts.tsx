@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -13,6 +13,10 @@ import {
   Cell
 } from "recharts";
 import { TicketRecord } from "../types";
+import { Selection } from "../utils/selection";
+import { TicketLink } from "./TicketLink";
+import { ageDays, classificationOf, isClosed, isCriticalOrHigh, isUnanswered } from "../utils/ticketHelpers";
+import * as XLSX from "xlsx";
 import { 
   ShieldAlert, 
   BarChart3, 
@@ -25,14 +29,20 @@ import {
   AlertTriangle,
   Clock,
   ExternalLink,
-  ChevronRight
+  ChevronRight,
+  Download,
+  FileSpreadsheet
 } from "lucide-react";
 
 interface DashboardChartsProps {
   filteredTickets: TicketRecord[];
+  onSelect?: (s: Selection) => void;
 }
 
-export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
+/** Crítico/alto, abierto y sin ninguna respuesta (regla única compartida con KPIs y detalle). */
+const isCriticalUnanswered = (t: TicketRecord) => isCriticalOrHigh(t) && !isClosed(t) && isUnanswered(t);
+
+export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsProps) {
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<"unanswered" | "all">("unanswered");
 
@@ -79,8 +89,7 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
     
     filteredTickets.forEach(t => {
       const account = t["Nombre de Cuenta"] || "Sin Cuenta";
-      const status = (t["Estado (Ticket)"] || "").toLowerCase();
-      const isOpen = status !== "cerrado";
+      const isOpen = !isClosed(t);
 
       if (!counts[account]) {
         counts[account] = { total: 0, open: 0 };
@@ -107,39 +116,7 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
     const counts: Record<string, number> = {};
 
     filteredTickets.forEach(t => {
-      const priority = (t["Prioridad (Ticket)"] || "").toLowerCase().trim();
-      const status = (t["Estado (Ticket)"] || "").toLowerCase().trim();
-      
-      const isCriticalOrHigh = 
-        priority.includes("crít") || 
-        priority.includes("crit") || 
-        priority.includes("alt") || 
-        priority.includes("urg") || 
-        priority.includes("high") || 
-        priority.includes("emerg") || 
-        priority.includes("1") ||
-        priority.includes("p1") ||
-        priority.includes("p2");
-
-      const isClosed = 
-        status.includes("cerr") || 
-        status.includes("clos") || 
-        status.includes("solv") || 
-        status.includes("termin") || 
-        status.includes("resuel") ||
-        status.includes("done") ||
-        status.includes("final");
-      const isNotClosed = !isClosed;
-
-      const repliesStr = String(t["Número de respuestas"] || "").trim();
-      const hasRepliesVal = repliesStr !== "" && repliesStr !== "0" && repliesStr !== "N/D" && !isNaN(Number(repliesStr)) && Number(repliesStr) > 0;
-      const hasResponseDate = (t["Hora de responder"] || "").trim() !== "" && (t["Hora de responder"] || "").trim() !== "N/D";
-      const agentTimeStr = String(t["Tiempo de respuesta del agente"] ?? "").trim();
-      const hasAgentTime = agentTimeStr !== "" && agentTimeStr !== "N/D";
-      
-      const isUnanswered = !hasRepliesVal && !hasResponseDate && !hasAgentTime;
-
-      if (isCriticalOrHigh && isNotClosed && isUnanswered) {
+      if (isCriticalUnanswered(t)) {
         const account = t["Nombre de Cuenta"] || "Sin Cuenta";
         counts[account] = (counts[account] || 0) + 1;
       }
@@ -154,11 +131,11 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
       .slice(0, 8);
   }, [filteredTickets]);
 
-  // 3. Distribution of Categories ("Distribución por Categorías")
+  // 3. Distribution of Categories ("Distribución por Clasificación")
   const categoryData = useMemo(() => {
     const counts: Record<string, number> = {};
     filteredTickets.forEach(t => {
-      const cat = t["Categoria (Ticket)"] || "Sin Categoría";
+      const cat = classificationOf(t);
       counts[cat] = (counts[cat] || 0) + 1;
     });
 
@@ -187,25 +164,45 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
   // Tickets that have "Número de respuestas" = 0, status is NOT Cerrado, sorted descending by creation time / or first response minutes.
   const topAgingTickets = useMemo(() => {
     return filteredTickets
-      .filter(t => {
-        const replies = Number(t["Número de respuestas"]) || 0;
-        const status = (t["Estado (Ticket)"] || "").toLowerCase();
-        return replies === 0 && status !== "cerrado";
-      })
+      .filter(t => !isClosed(t) && isUnanswered(t))
       .map(t => {
-        const firstRespTime = Number(t["Tiempo de primera respuesta en horario laboral"]) || 0;
         return {
+          ticket: t,
           id: t["ID de Ticket"],
           account: t["Nombre de Cuenta"],
           subject: t["Asunto"],
           priority: t["Prioridad (Ticket)"],
+          status: t["Estado (Ticket)"],
+          owner: t["Propietario de Ticket"],
+          engineer: t["Ingeniero de soporte asignado"],
           created: t["Hora de creación (Ticket)"],
-          delay: firstRespTime
+          // Días de espera desde la creación (el caso aún no tiene respuesta)
+          delay: Math.floor(ageDays(t) ?? 0)
         };
       })
-      .sort((a, b) => b.delay - a.delay) // Worst delay first
-      .slice(0, 5); // top 5 worst
+      .sort((a, b) => b.delay - a.delay); // Mayor espera primero
   }, [filteredTickets]);
+
+  // Export the full list of historical unattended cases to a genuine .XLSX Excel sheet
+  const handleExportAgingExcel = () => {
+    const dataToExport = topAgingTickets.map(t => ({
+      "ID de Ticket": t.id,
+      "Nombre de Cuenta": t.account,
+      "Asunto": t.subject,
+      "Prioridad": t.priority,
+      "Estado": t.status,
+      "Propietario": t.owner,
+      "Ingeniero Asignado": t.engineer,
+      "Fecha de Creación": t.created,
+      "Días de espera sin respuesta": t.delay
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Casos Históricos Sin Atender");
+
+    XLSX.writeFile(workbook, `Casos_Historicos_Sin_Atender_ECS_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
 
   // Filter all tickets for selected account
   const accountAllTickets = useMemo(() => {
@@ -216,42 +213,13 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
   // Filter critical/high priority unanswered for selected account
   const accountCriticalUnansweredTickets = useMemo(() => {
     if (!selectedAccount) return [];
-    return accountAllTickets.filter(t => {
-      const priority = (t["Prioridad (Ticket)"] || "").toLowerCase().trim();
-      const status = (t["Estado (Ticket)"] || "").toLowerCase().trim();
-      
-      const isCriticalOrHigh = 
-        priority.includes("crít") || 
-        priority.includes("crit") || 
-        priority.includes("alt") || 
-        priority.includes("urg") || 
-        priority.includes("high") || 
-        priority.includes("emerg") || 
-        priority.includes("1") ||
-        priority.includes("p1") ||
-        priority.includes("p2");
-
-      const isClosed = 
-        status.includes("cerr") || 
-        status.includes("clos") || 
-        status.includes("solv") || 
-        status.includes("termin") || 
-        status.includes("resuel") ||
-        status.includes("done") ||
-        status.includes("final");
-      const isNotClosed = !isClosed;
-
-      const repliesStr = String(t["Número de respuestas"] || "").trim();
-      const hasRepliesVal = repliesStr !== "" && repliesStr !== "0" && repliesStr !== "N/D" && !isNaN(Number(repliesStr)) && Number(repliesStr) > 0;
-      const hasResponseDate = (t["Hora de responder"] || "").trim() !== "" && (t["Hora de responder"] || "").trim() !== "N/D";
-      const agentTimeStr = String(t["Tiempo de respuesta del agente"] ?? "").trim();
-      const hasAgentTime = agentTimeStr !== "" && agentTimeStr !== "N/D";
-      
-      const isUnanswered = !hasRepliesVal && !hasResponseDate && !hasAgentTime;
-
-      return isCriticalOrHigh && isNotClosed && isUnanswered;
-    });
+    return accountAllTickets.filter(isCriticalUnanswered);
   }, [accountAllTickets, selectedAccount]);
+
+  // Si el filtro de propietario deja al cliente seleccionado sin casos, se cierra el detalle
+  useEffect(() => {
+    if (selectedAccount && accountAllTickets.length === 0) setSelectedAccount(null);
+  }, [selectedAccount, accountAllTickets.length]);
 
   if (filteredTickets.length === 0) {
     return (
@@ -497,25 +465,20 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
                       statBadge = "bg-emerald-950/30 text-emerald-400 border border-emerald-900/40";
                     }
 
-                    // Calculate unanswered status and delay times
-                    const repliesStr = String(t["Número de respuestas"] || "").trim();
-                    const hasRepliesVal = repliesStr !== "" && repliesStr !== "0" && repliesStr !== "N/D" && !isNaN(Number(repliesStr)) && Number(repliesStr) > 0;
-                    const hasResponseDate = (t["Hora de responder"] || "").trim() !== "" && (t["Hora de responder"] || "").trim() !== "N/D";
-                    const agentTimeStr = String(t["Tiempo de respuesta del agente"] ?? "").trim();
-                    const hasAgentTime = agentTimeStr !== "" && agentTimeStr !== "N/D";
-                    const isUnanswered = !hasRepliesVal && !hasResponseDate && !hasAgentTime;
+                    const hasResponseDate = (t["Hora de responder"] || "").trim() !== "";
+                    const unanswered = isUnanswered(t);
 
                     const minutesVal = Number(t["Tiempo de primera respuesta en horario laboral"]) || 0;
-                    const calDelay = calculateCalendarDelay(t["Hora de creación (Ticket)"] || "", t["Hora de responder"] || "");
+                    const calDelay = calculateCalendarDelay(t["Hora de creación (Ticket)"] || "", "");
 
                     return (
                       <tr key={idx} className="hover:bg-slate-850/50 transition-colors">
-                        <td className="p-3 font-mono font-bold text-blue-400 whitespace-nowrap">{t["ID de Ticket"]}</td>
+                        <td className="p-3 whitespace-nowrap"><TicketLink ticket={t} className="text-blue-400" /></td>
                         <td className="p-3">
                           <div className="font-semibold text-slate-100">{t["Asunto"]}</div>
                           <div className="text-[10px] text-slate-400 mt-0.5 flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
                             <span>Creado: {t["Hora de creación (Ticket)"] || "N/D"}</span>
-                            {hasResponseDate && <span>Respondido: {t["Hora de responder"]}</span>}
+                            {hasResponseDate && <span>Vence: {t["Hora de responder"]}</span>}
                           </div>
                         </td>
                         <td className="p-3">
@@ -530,14 +493,14 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
                         </td>
                         <td className="p-3 text-slate-300 font-medium">{t["Ingeniero de soporte asignado"] || "Sin Asignar"}</td>
                         <td className="p-3 text-right">
-                          {isUnanswered ? (
+                          {unanswered ? (
                             <div className="font-extrabold text-rose-500 animate-pulse">🚨 Sin 1ª Respuesta</div>
                           ) : (
                             <div className="font-bold text-emerald-400">
                               {minutesVal > 0 ? `${minutesVal} min (Lab)` : "Atendido"}
                             </div>
                           )}
-                          <div className="text-[10px] text-slate-400 mt-0.5">{calDelay.text}</div>
+                          {unanswered && <div className="text-[10px] text-slate-400 mt-0.5">{calDelay.text}</div>}
                         </td>
                       </tr>
                     );
@@ -559,7 +522,7 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
             </div>
             <div>
               <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
-                Distribución por Categorías
+                Distribución por Clasificación
               </h3>
               <p className="text-[10px] text-gray-400">Principales áreas de soporte técnico</p>
             </div>
@@ -580,6 +543,11 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
                       outerRadius={70}
                       paddingAngle={4}
                       dataKey="value"
+                      style={{ cursor: "pointer" }}
+                      onClick={(r: any) => {
+                        const d = (r && r.payload) || r;
+                        onSelect?.({ title: `Clasificación: ${d.name}`, criteria: [{ dimension: "classification", value: d.name }] });
+                      }}
                     >
                       {categoryData.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={entry.color} />
@@ -596,7 +564,8 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
           </div>
           <div className="grid grid-cols-2 gap-2 mt-2">
             {categoryData.map((item, index) => (
-              <div key={index} className="flex items-center gap-1.5 text-[10px] text-gray-600">
+              <div key={index} onClick={() => onSelect?.({ title: `Clasificación: ${item.name}`, criteria: [{ dimension: "classification", value: item.name }] })}
+                className="flex items-center gap-1.5 text-[10px] text-gray-600 cursor-pointer hover:bg-gray-50 rounded px-1">
                 <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }}></span>
                 <span className="truncate" title={item.name}>{item.name}</span>
                 <span className="font-bold ml-auto bg-gray-100 px-1 py-0.2 rounded">{item.value}</span>
@@ -616,16 +585,27 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
                 <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
                   Alerta: Casos Históricos Sin Atender
                 </h3>
-                <p className="text-[10px] text-gray-400">Casos activos sin ninguna respuesta, priorizados por demora de primera respuesta en horario laboral</p>
+                <p className="text-[10px] text-gray-400">Casos abiertos sin ninguna respuesta, ordenados por días de espera desde su creación</p>
               </div>
             </div>
 
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800">
-              Urgente
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800">
+                {topAgingTickets.length} {topAgingTickets.length === 1 ? "Caso" : "Casos"}
+              </span>
+              <button
+                onClick={handleExportAgingExcel}
+                disabled={topAgingTickets.length === 0}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                title="Exportar el detalle completo a Excel (.xlsx)"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                Excel
+              </button>
+            </div>
           </div>
 
-          <div className="space-y-3">
+          <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
             {topAgingTickets.length === 0 ? (
               <div className="py-12 text-center text-xs text-gray-400 flex flex-col items-center justify-center">
                 <CheckCircle className="w-8 h-8 text-emerald-500 mb-1" />
@@ -650,8 +630,8 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
                   >
                     <div className="space-y-1 max-w-lg">
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-bold text-[#005bbf] bg-blue-50 px-2 py-0.5 rounded">
-                          {ticket.id}
+                        <span className="text-xs text-[#005bbf] bg-blue-50 px-2 py-0.5 rounded">
+                          <TicketLink ticket={ticket.ticket} />
                         </span>
                         <span className="text-xs font-extrabold text-gray-900">
                           {ticket.account}
@@ -670,10 +650,10 @@ export function DashboardCharts({ filteredTickets }: DashboardChartsProps) {
 
                     <div className="mt-2 sm:mt-0 text-right">
                       <div className="text-xs font-extrabold text-rose-700 font-mono">
-                        {ticket.delay ? `${ticket.delay} min` : "Sin tiempo de respuesta registrado"}
+                        {ticket.delay} {ticket.delay === 1 ? "día" : "días"}
                       </div>
                       <div className="text-[10px] text-gray-400 font-semibold uppercase">
-                        Retraso de Respuesta
+                        Esperando 1ª respuesta
                       </div>
                     </div>
                   </div>

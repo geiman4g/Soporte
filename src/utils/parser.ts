@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx";
 import { TicketRecord } from "../types";
+import { durationToMinutes, normalizeSla, normalizeZohoDate } from "./zoho";
 
 export function parseFile(file: File): Promise<TicketRecord[]> {
   return new Promise((resolve, reject) => {
@@ -157,25 +158,36 @@ export function parseFile(file: File): Promise<TicketRecord[]> {
             return foundKey ? row[foundKey] : "";
           };
 
+          // Los archivos exportados de Zoho traen "-" para vacíos, duraciones como "3d 23h"
+          // y fechas como "21 Aug 2026 04:27 PM": se normalizan igual que la sincronización en vivo.
+          const txt = (k: string, def = "") => {
+            const v = String(getVal(k) ?? "").trim();
+            return v === "-" || v === "" ? def : v;
+          };
+          const dur = (k: string) => durationToMinutes(getVal(k));
+          const hoursSpent = dur("Tiempo total empleado");
+          const classification = txt("Clasificaciones", "");
           return {
-            "Nombre de Cuenta": String(getVal("Nombre de Cuenta") || "Sin Cuenta").trim(),
-            "Clasificaciones": String(getVal("Clasificaciones") || "Cliente Estándar").trim(),
-            "Propietario de Ticket": String(getVal("Propietario de Ticket") || "Soporte Nivel 1").trim(),
-            "ID de Ticket": String(getVal("ID de Ticket") || `TKT-AUTO-${index + 1}`).trim(),
-            "Asunto": String(getVal("Asunto") || "Sin Asunto").trim(),
-            "Categoria (Ticket)": String(getVal("Categoria (Ticket)") || "Sin Categoría").trim(),
-            "Prioridad (Ticket)": String(getVal("Prioridad (Ticket)") || "Media").trim(),
-            "Estado (Ticket)": String(getVal("Estado (Ticket)") || "Abierto").trim(),
-            "Hora de creación (Ticket)": String(getVal("Hora de creación (Ticket)") || "").trim(),
-            "Ticket Tiempo terminado": String(getVal("Ticket Tiempo terminado") || "").trim(),
-            "Tiempo total empleado": getVal("Tiempo total empleado") !== undefined ? getVal("Tiempo total empleado") : 0,
-            "Ingeniero de soporte asignado": String(getVal("Ingeniero de soporte asignado") || "No Asignado").trim(),
-            "Tipo de vulneración del SLA": String(getVal("Tipo de vulneración del SLA") || "Ninguna").trim(),
-            "Tiempo de respuesta del agente": getVal("Tiempo de respuesta del agente") !== undefined ? getVal("Tiempo de respuesta del agente") : "",
-            "Tiempo de primera respuesta en horario laboral": getVal("Tiempo de primera respuesta en horario laboral") !== undefined ? getVal("Tiempo de primera respuesta en horario laboral") : "",
-            "Tiempo total de respuesta en horario laboral": getVal("Tiempo total de respuesta en horario laboral") !== undefined ? getVal("Tiempo total de respuesta en horario laboral") : "",
-            "Número de respuestas": getVal("Número de respuestas") !== undefined ? getVal("Número de respuestas") : 0,
-            "Hora de responder": String(getVal("Hora de responder") || "").trim()
+            "Nombre de Cuenta": txt("Nombre de Cuenta", "Sin Cuenta"),
+            "Clasificaciones": classification || "Sin Clasificación",
+            "Propietario de Ticket": txt("Propietario de Ticket", "Sin Propietario"),
+            "ID de Ticket": txt("ID de Ticket", `TKT-AUTO-${index + 1}`),
+            "Asunto": txt("Asunto", "Sin Asunto"),
+            "Categoria (Ticket)": txt("Categoria (Ticket)", "") || classification || "Sin Clasificación",
+            "Prioridad (Ticket)": txt("Prioridad (Ticket)", "Sin Prioridad"),
+            "Estado (Ticket)": txt("Estado (Ticket)", "Sin Estado"),
+            "Hora de creación (Ticket)": normalizeZohoDate(getVal("Hora de creación (Ticket)")),
+            "Ticket Tiempo terminado": normalizeZohoDate(getVal("Ticket Tiempo terminado")),
+            "Tiempo total empleado": typeof getVal("Tiempo total empleado") === "number" || !String(getVal("Tiempo total empleado")).includes(":")
+              ? (txt("Tiempo total empleado", "") === "" ? "" : Number(txt("Tiempo total empleado")) || 0)
+              : (hoursSpent === "" ? "" : Math.round((hoursSpent / 60) * 100) / 100),
+            "Ingeniero de soporte asignado": txt("Ingeniero de soporte asignado", "No Asignado"),
+            "Tipo de vulneración del SLA": normalizeSla(getVal("Tipo de vulneración del SLA")),
+            "Tiempo de respuesta del agente": normalizeZohoDate(getVal("Tiempo de respuesta del agente")),
+            "Tiempo de primera respuesta en horario laboral": dur("Tiempo de primera respuesta en horario laboral"),
+            "Tiempo total de respuesta en horario laboral": dur("Tiempo total de respuesta en horario laboral"),
+            "Número de respuestas": Number(txt("Número de respuestas", "0")) || 0,
+            "Hora de responder": normalizeZohoDate(getVal("Hora de responder"))
           };
         });
 

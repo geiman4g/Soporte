@@ -1,9 +1,10 @@
 import React from "react";
-import { Cpu, Activity, Clock } from "lucide-react";
-import { Logo } from "./Logo";
+import { Cpu, Activity, Clock, LogOut } from "lucide-react";
+import { useAuthUser } from "../auth/AuthGate";
 
 export function Header() {
   const [currentTime, setCurrentTime] = React.useState<string>("");
+  const user = useAuthUser();
 
   React.useEffect(() => {
     const updateTime = () => {
@@ -28,12 +29,32 @@ export function Header() {
         <div className="flex justify-between h-16 items-center">
           {/* Logo & Corporate Brand */}
           <div className="flex items-center space-x-4">
-            <Logo height={44} />
+            <img
+              src={`${import.meta.env.BASE_URL}logos/ecs.png`}
+              alt="Effective Computer Solutions"
+              className="h-8 w-auto"
+            />
+            <div className="hidden sm:block h-8 w-px bg-gray-200"></div>
+            <img
+              src={`${import.meta.env.BASE_URL}logos/sac.png`}
+              alt="SAC - Sistema de administración de cobranzas"
+              className="h-9 w-auto hidden sm:block"
+            />
             <div className="hidden lg:block h-8 w-px bg-gray-200"></div>
             <h1 className="text-sm md:text-base font-bold text-gray-800 tracking-tight">
               Dashboard de Monitoreo y Seguimiento de Soporte
             </h1>
           </div>
+
+          {user && (
+            <button
+              onClick={user.signOut}
+              className="md:hidden inline-flex items-center gap-1 px-2 py-1.5 rounded-md border border-gray-200 text-xs text-gray-600 hover:bg-gray-50 cursor-pointer"
+              title="Cerrar sesión"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          )}
 
           {/* System Status and Live Time */}
           <div className="hidden md:flex items-center space-x-6 text-sm text-gray-500">
@@ -47,6 +68,22 @@ export function Header() {
               <Clock className="w-4 h-4 text-gray-400" />
               <span>{currentTime || "00:00:00"}</span>
             </div>
+            {user && (
+              <>
+                <div className="h-4 w-px bg-gray-200"></div>
+                <div className="text-right leading-tight hidden lg:block">
+                  <div className="text-xs font-semibold text-gray-800">{user.name}</div>
+                  <div className="text-[10px] text-gray-400">{user.email}</div>
+                </div>
+                <button
+                  onClick={user.signOut}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-gray-200 text-xs font-medium text-gray-600 hover:bg-gray-50 cursor-pointer"
+                  title="Cerrar sesión"
+                >
+                  <LogOut className="w-3.5 h-3.5" /> Salir
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
