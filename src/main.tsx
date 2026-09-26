@@ -1,11 +1,14 @@
-import {StrictMode} from 'react';
-import {createRoot} from 'react-dom/client';
-import App from './App.tsx';
-import './index.css';
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App.tsx";
+import { AuthGate } from "./auth/AuthGate.tsx";
+import "./index.css";
 
-// El inicio de sesión con Microsoft 365 quedó desactivado (src/auth se conserva por si se retoma).
-createRoot(document.getElementById('root')!).render(
+// Inicio de sesión corporativo integrado con Directorio Activo (Active Directory / Microsoft Entra ID)
+createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <AuthGate>
+      <App />
+    </AuthGate>
   </StrictMode>,
 );

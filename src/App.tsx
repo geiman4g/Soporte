@@ -12,6 +12,7 @@ import { Selection } from "./utils/selection";
 import { fetchZohoReport, getLastSync } from "./utils/zoho";
 import { INITIAL_MOCK_DATA } from "./mockData";
 import { TicketRecord } from "./types";
+import { useAuthUser } from "./auth/AuthGate";
 import { 
   Database, 
   HelpCircle, 
@@ -33,6 +34,8 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const ticketsRef = useRef<TicketRecord[]>([]);
   useEffect(() => { ticketsRef.current = tickets; }, [tickets]);
+
+  const user = useAuthUser();
 
   const ownersIn = (list: TicketRecord[]) =>
     Array.from(new Set(list.map(t => t["Propietario de Ticket"] || "Sin Propietario")));
@@ -123,13 +126,21 @@ export default function App() {
         
         {/* Intro Alert Hero explaining dataset source */}
         <div className="bg-gradient-to-r from-[#005bbf] to-[#0d69af] text-white rounded-xl p-6 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <h2 className="text-lg font-bold tracking-tight flex items-center gap-2">
-              <ShieldCheck className="w-5 h-5 text-amber-400 animate-pulse" />
-              Consola de Inteligencia de Soporte Técnico
-            </h2>
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-lg font-bold tracking-tight flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-amber-400 animate-pulse" />
+                Consola de Inteligencia de Soporte Técnico
+              </h2>
+              {user && (
+                <span className="bg-white/15 backdrop-blur-xs text-amber-300 text-[11px] font-semibold px-2.5 py-0.5 rounded-full border border-white/20 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  AD: {user.name} ({user.department.split(" ")[0]})
+                </span>
+              )}
+            </div>
             <p className="text-xs text-blue-100 max-w-2xl">
-              Análisis interactivo de rendimiento para <strong className="text-white">Effective Computer Solutions</strong>. 
+              Análisis interactivo de rendimiento para <strong className="text-white">Effective Computer Solutions</strong> y <strong className="text-white">SAC</strong>. 
               Actualiza desde Zoho Desk o sube reportes de soporte técnico, valida niveles de servicio, demoras de primera respuesta laboral, y gestiona picos de casos críticos.
             </p>
           </div>

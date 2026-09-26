@@ -21,8 +21,7 @@
  *      estado distinto de "Cerrado" y que no contenga "Cierre por Vencimiento").
  */
 
-import { createRemoteJWKSet, jwtVerify } from "jose";
-
+// type definition for optional records
 type AnyRecord = Record<string, any>;
 
 const env = (k: string, d = "") => (process.env[k] ?? d).trim();
@@ -351,7 +350,7 @@ function buildRecordFromTicket(t: AnyRecord, m: AnyRecord) {
 // ---------------------------------------------------------------------------
 // Inicio de sesión con Microsoft 365: valida el token de Microsoft Entra ID
 // ---------------------------------------------------------------------------
-let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+let jwks: any = null;
 
 async function verifyMicrosoftUser(req: any): Promise<string> {
   const clientId = env("AZURE_CLIENT_ID");
@@ -360,9 +359,10 @@ async function verifyMicrosoftUser(req: any): Promise<string> {
   const auth = String(req.headers["authorization"] || "");
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token) throw new HttpError(401, "Inicia sesión con tu cuenta de Microsoft 365 de ECS.");
-  jwks = jwks || createRemoteJWKSet(new URL(`https://login.microsoftonline.com/${tenant}/discovery/v2.0/keys`));
   let payload: AnyRecord;
   try {
+    const { createRemoteJWKSet, jwtVerify } = (await (Function('return import("jose")')() as Promise<any>));
+    jwks = jwks || createRemoteJWKSet(new URL(`https://login.microsoftonline.com/${tenant}/discovery/v2.0/keys`));
     ({ payload } = await jwtVerify(token, jwks, {
       issuer: `https://login.microsoftonline.com/${tenant}/v2.0`,
       audience: clientId,
@@ -393,7 +393,7 @@ export default async function handler(req: any, res: any) {
     }
     if (!env("ZOHO_CLIENT_ID") || !env("ZOHO_CLIENT_SECRET") || !env("ZOHO_REFRESH_TOKEN")) {
       return res.status(500).json({
-        error: "Faltan las credenciales de Zoho (ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN) en Vercel.",
+        error: "Faltan las credenciales de Zoho (ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN) en las variables de entorno.",
       });
     }
 

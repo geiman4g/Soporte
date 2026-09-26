@@ -1,0 +1,37 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 640 160' width='640' height='160'>
+  <defs>
+    <linearGradient id='blueWave' x1='0%' y1='0%' x2='100%' y2='100%'>
+      <stop offset='0%' stop-color='#008be3' />
+      <stop offset='45%' stop-color='#0066cc' />
+      <stop offset='100%' stop-color='#0a3d82' />
+    </linearGradient>
+    <linearGradient id='orangeWave' x1='0%' y1='0%' x2='100%' y2='100%'>
+      <stop offset='0%' stop-color='#ffad33' />
+      <stop offset='100%' stop-color='#f28500' />
+    </linearGradient>
+    <filter id='dropShadow' x='-10%' y='-10%' width='130%' height='130%'>
+      <feDropShadow dx='0' dy='3' stdDeviation='3' flood-opacity='0.18'/>
+    </filter>
+  </defs>
+  
+  <!-- Swirl Icon -->
+  <g transform='translate(20, 15)'>
+    <!-- Outer circle container subtle glow -->
+    <circle cx='65' cy='65' r='58' fill='white' filter='url(#dropShadow)'/>
+    
+    <!-- Outer Blue Crest -->
+    <path d='M 65,12 A 53,53 0 0,0 20,95 C 24,76 39,64 58,64 C 77,64 91,78 88,96 C 85,107 72,115 62,114 A 53,53 0 0,0 118,65 C 118,36 94,12 65,12 Z' fill='url(#blueWave)' />
+    
+    <!-- Inner Orange Swoop -->
+    <path d='M 92,48 C 98,56 100,68 96,78 C 92,89 83,96 74,97 C 76,84 69,73 58,68 C 47,64 36,68 31,76 C 34,55 48,36 68,33 C 78,32 87,38 92,48 Z' fill='url(#orangeWave)' />
+    
+    <!-- Amber Dot -->
+    <circle cx='95' cy='103' r='7.5' fill='#f2994a' stroke='white' stroke-width='2' />
+  </g>
+
+  <!-- Typography -->
+  <g transform='translate(175, 42)'>
+    <text x='0' y='46' font-family='Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif' font-weight='800' font-size='56' fill='#0e529a' letter-spacing='-0.5px'>Effective</text>
+    <text x='3' y='82' font-family='Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif' font-weight='600' font-size='32' fill='#175ea8' letter-spacing='0.5px'>Computer Solutions</text>
+  </g>
+</svg>

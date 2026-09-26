@@ -13,6 +13,6 @@ export default function handler(_req: any, res: any) {
     clientId: env("AZURE_CLIENT_ID"),
     tenantId: env("AZURE_TENANT_ID", "afedf556-d8ff-48b9-875b-d191d77f4832"),
     allowedDomain: env("ALLOWED_EMAIL_DOMAIN", "ecs-la.com").toLowerCase(),
-    disabled: env("AUTH_DISABLED").toLowerCase() === "true",
+    disabled: env("AUTH_DISABLED", "false").toLowerCase() === "true",
   });
 }
