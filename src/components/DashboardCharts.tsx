@@ -15,7 +15,10 @@ import {
 import { TicketRecord } from "../types";
 import { Selection } from "../utils/selection";
 import { TicketLink } from "./TicketLink";
-import { ageDays, classificationOf, isClosed, isCriticalOrHigh, isUnanswered } from "../utils/ticketHelpers";
+import {
+  attentionReasons, classificationOf, formatHours, hoursWithoutResponse, isClosed, isCriticalOrHigh, isUnanswered,
+  needsAttention, PENDING_RESPONSE_HOURS, CRITICAL_RESPONSE_HOURS, hoursAwaitingEcs, isCriticalWithoutResponse,
+} from "../utils/ticketHelpers";
 import * as XLSX from "xlsx";
 import { 
   ShieldAlert, 
@@ -39,8 +42,18 @@ interface DashboardChartsProps {
   onSelect?: (s: Selection) => void;
 }
 
-/** Crítico/alto, abierto y sin ninguna respuesta (regla única compartida con KPIs y detalle). */
-const isCriticalUnanswered = (t: TicketRecord) => isCriticalOrHigh(t) && !isClosed(t) && isUnanswered(t);
+/** Crítico/alto con más de 1 h sin respuesta de ECS (desde la creación o desde el último mensaje del cliente). */
+const isCriticalUnanswered = (t: TicketRecord) => isCriticalWithoutResponse(t);
+
+/** Etiquetas de motivo (Nuevo / Sin 1ª respuesta / Sin respuesta +4 h). */
+const ReasonBadges = ({ t, dark = false }: { t: TicketRecord; dark?: boolean }) => (
+  <span className="inline-flex flex-wrap gap-1 justify-end">
+    {attentionReasons(t).map(r => (
+      <span key={r} className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+        dark ? "bg-rose-950/60 text-rose-300 border border-rose-900" : "bg-rose-100 text-rose-800"}`}>{r}</span>
+    ))}
+  </span>
+);
 
 export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsProps) {
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
@@ -125,9 +138,9 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
     return Object.entries(counts)
       .map(([name, count]) => ({
         name,
-        "Casos Críticos Sin Respuesta": count
+        "Críticos sin respuesta +1 h": count
       }))
-      .sort((a, b) => b["Casos Críticos Sin Respuesta"] - a["Casos Críticos Sin Respuesta"])
+      .sort((a, b) => b["Críticos sin respuesta +1 h"] - a["Críticos sin respuesta +1 h"])
       .slice(0, 8);
   }, [filteredTickets]);
 
@@ -164,8 +177,9 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
   // Tickets that have "Número de respuestas" = 0, status is NOT Cerrado, sorted descending by creation time / or first response minutes.
   const topAgingTickets = useMemo(() => {
     return filteredTickets
-      .filter(t => !isClosed(t) && isUnanswered(t))
+      .filter(needsAttention)
       .map(t => {
+        const hours = hoursWithoutResponse(t);
         return {
           ticket: t,
           id: t["ID de Ticket"],
@@ -176,11 +190,12 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
           owner: t["Propietario de Ticket"],
           engineer: t["Ingeniero de soporte asignado"],
           created: t["Hora de creación (Ticket)"],
-          // Días de espera desde la creación (el caso aún no tiene respuesta)
-          delay: Math.floor(ageDays(t) ?? 0)
+          reasons: attentionReasons(t),
+          // Horas sin respuesta de ECS desde la creación o desde el último mensaje del cliente
+          hours,
         };
       })
-      .sort((a, b) => b.delay - a.delay); // Mayor espera primero
+      .sort((a, b) => (b.hours ?? -1) - (a.hours ?? -1)); // Mayor espera primero
   }, [filteredTickets]);
 
   // Export the full list of historical unattended cases to a genuine .XLSX Excel sheet
@@ -194,7 +209,9 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
       "Propietario": t.owner,
       "Ingeniero Asignado": t.engineer,
       "Fecha de Creación": t.created,
-      "Días de espera sin respuesta": t.delay
+      "Motivo": t.reasons.join(" · "),
+      "Tiempo sin respuesta": formatHours(t.hours),
+      "Horas sin respuesta": t.hours === null ? "" : Math.round(t.hours * 10) / 10
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(dataToExport);
@@ -305,7 +322,7 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
                   Criticidad por Cliente (Casos Críticos/Altos Sin Responder)
                 </h3>
               </div>
-              <p className="text-[10px] text-gray-400 mt-1">Casos críticos o de alta prioridad sin ninguna respuesta inicial</p>
+              <p className="text-[10px] text-gray-400 mt-1">Casos críticos o altos que llevan más de {CRITICAL_RESPONSE_HOURS} h sin respuesta de ECS (desde su creación o desde el último mensaje del cliente)</p>
             </div>
             <div className="text-right">
               <span className="inline-flex px-1.5 py-0.5 text-[9px] font-semibold bg-rose-50 text-rose-700 rounded-md border border-rose-100 animate-pulse">
@@ -319,7 +336,7 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
               <div className="h-full flex flex-col items-center justify-center text-xs text-gray-400 p-4 text-center">
                 <CheckCircle className="w-8 h-8 text-emerald-500 mb-1" />
                 <span className="font-semibold text-gray-700">¡Excelente!</span>
-                <span>No hay casos críticos sin respuesta inicial en este grupo.</span>
+                <span>No hay casos críticos o altos con más de {CRITICAL_RESPONSE_HOURS} h sin respuesta en este grupo.</span>
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
@@ -344,7 +361,7 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
                     contentStyle={{ backgroundColor: "#1e293b", color: "#fff", borderRadius: "8px", fontSize: "11px" }}
                     itemStyle={{ color: "#fff" }}
                   />
-                  <Bar dataKey="Casos Críticos Sin Respuesta" fill="#dc2626" radius={[4, 4, 0, 0]} barSize={32} />
+                  <Bar dataKey="Críticos sin respuesta +1 h" fill="#dc2626" radius={[4, 4, 0, 0]} barSize={32} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -382,7 +399,7 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
               <div className="text-xl font-mono font-black text-blue-400 mt-1">{accountAllTickets.length}</div>
             </div>
             <div className="bg-slate-950 p-3 rounded-lg border border-slate-850 border-l-4 border-l-rose-500">
-              <div className="text-[10px] font-bold text-slate-400 uppercase">Críticos / Altos sin Responder</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase">Críticos / Altos sin respuesta +1 h</div>
               <div className="text-xl font-mono font-black text-rose-400 mt-1">{accountCriticalUnansweredTickets.length}</div>
             </div>
             <div className="bg-slate-950 p-3 rounded-lg border border-slate-850">
@@ -406,7 +423,7 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
               }`}
             >
               <AlertTriangle className="w-3.5 h-3.5" />
-              Críticos Sin Responder ({accountCriticalUnansweredTickets.length})
+              Críticos sin respuesta +1 h ({accountCriticalUnansweredTickets.length})
             </button>
             <button
               onClick={() => setDetailTab("all")}
@@ -426,8 +443,8 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
             {detailTab === "unanswered" && accountCriticalUnansweredTickets.length === 0 ? (
               <div className="py-8 text-center text-slate-400 text-xs flex flex-col items-center justify-center">
                 <CheckCircle className="w-8 h-8 text-emerald-500 mb-1.5" />
-                <span className="font-bold text-white">¡No hay casos críticos sin respuesta!</span>
-                <span>Todos los incidentes críticos de este cliente tienen una interacción registrada.</span>
+                <span className="font-bold text-white">¡No hay casos críticos sin atender!</span>
+                <span>Ningún caso crítico o alto de este cliente lleva más de {CRITICAL_RESPONSE_HOURS} h sin respuesta.</span>
               </div>
             ) : detailTab === "all" && accountAllTickets.length === 0 ? (
               <div className="py-8 text-center text-slate-400 text-xs">No hay tickets registrados para este cliente.</div>
@@ -440,7 +457,7 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
                     <th className="p-3 font-semibold">Prioridad</th>
                     <th className="p-3 font-semibold">Estado</th>
                     <th className="p-3 font-semibold">Asignado</th>
-                    <th className="p-3 font-semibold text-right">Demora de Primera Respuesta</th>
+                    <th className="p-3 font-semibold text-right">Atención</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-850">
@@ -466,10 +483,8 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
                     }
 
                     const hasResponseDate = (t["Hora de responder"] || "").trim() !== "";
-                    const unanswered = isUnanswered(t);
 
                     const minutesVal = Number(t["Tiempo de primera respuesta en horario laboral"]) || 0;
-                    const calDelay = calculateCalendarDelay(t["Hora de creación (Ticket)"] || "", "");
 
                     return (
                       <tr key={idx} className="hover:bg-slate-850/50 transition-colors">
@@ -493,14 +508,20 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
                         </td>
                         <td className="p-3 text-slate-300 font-medium">{t["Ingeniero de soporte asignado"] || "Sin Asignar"}</td>
                         <td className="p-3 text-right">
-                          {unanswered ? (
-                            <div className="font-extrabold text-rose-500 animate-pulse">🚨 Sin 1ª Respuesta</div>
+                          {(hoursAwaitingEcs(t) ?? 0) > CRITICAL_RESPONSE_HOURS ? (
+                            <>
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-950/60 text-rose-300 border border-rose-900">
+                                {isUnanswered(t) ? "Sin 1ª respuesta" : "Cliente sin respuesta"}
+                              </span>
+                              <div className="text-[10px] text-slate-400 mt-0.5">
+                                {formatHours(hoursAwaitingEcs(t))} sin respuesta
+                              </div>
+                            </>
                           ) : (
                             <div className="font-bold text-emerald-400">
                               {minutesVal > 0 ? `${minutesVal} min (Lab)` : "Atendido"}
                             </div>
                           )}
-                          {unanswered && <div className="text-[10px] text-slate-400 mt-0.5">{calDelay.text}</div>}
                         </td>
                       </tr>
                     );
@@ -585,7 +606,7 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
                 <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
                   Alerta: Casos Históricos Sin Atender
                 </h3>
-                <p className="text-[10px] text-gray-400">Casos abiertos sin ninguna respuesta, ordenados por días de espera desde su creación</p>
+                <p className="text-[10px] text-gray-400">Casos en estado Nuevo, sin 1ª respuesta o con más de {PENDING_RESPONSE_HOURS} h sin respuesta desde el último mensaje del cliente · mayor espera primero</p>
               </div>
             </div>
 
@@ -610,7 +631,7 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
               <div className="py-12 text-center text-xs text-gray-400 flex flex-col items-center justify-center">
                 <CheckCircle className="w-8 h-8 text-emerald-500 mb-1" />
                 <span className="font-semibold text-gray-700">¡Impecable!</span>
-                <span>No hay tickets históricos sin una primera interacción asignados a este propietario.</span>
+                <span>No hay casos sin atender para los propietarios seleccionados.</span>
               </div>
             ) : (
               topAgingTickets.map((ticket, index) => {
@@ -650,11 +671,12 @@ export function DashboardCharts({ filteredTickets, onSelect }: DashboardChartsPr
 
                     <div className="mt-2 sm:mt-0 text-right">
                       <div className="text-xs font-extrabold text-rose-700 font-mono">
-                        {ticket.delay} {ticket.delay === 1 ? "día" : "días"}
+                        {formatHours(ticket.hours)}
                       </div>
-                      <div className="text-[10px] text-gray-400 font-semibold uppercase">
-                        Esperando 1ª respuesta
+                      <div className="text-[10px] text-gray-400 font-semibold uppercase mb-1">
+                        Sin respuesta de ECS
                       </div>
+                      <ReasonBadges t={ticket.ticket} />
                     </div>
                   </div>
                 );

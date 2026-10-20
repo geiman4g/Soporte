@@ -8,10 +8,12 @@ import { CriticalTicketsTable } from "./components/CriticalTicketsTable";
 import { TrackingCharts } from "./components/TrackingCharts";
 import { TicketDetailDrawer } from "./components/TicketDetailDrawer";
 import { ZohoSyncPanel } from "./components/ZohoSyncPanel";
+import { WeeklyReportButton } from "./components/WeeklyReportButton";
 import { Selection } from "./utils/selection";
 import { fetchZohoReport, getLastSync } from "./utils/zoho";
 import { INITIAL_MOCK_DATA } from "./mockData";
 import { TicketRecord } from "./types";
+import { isClosed } from "./utils/ticketHelpers";
 import { useAuthUser } from "./auth/AuthGate";
 import { 
   Database, 
@@ -100,13 +102,21 @@ export default function App() {
 
   const totalOwners = useMemo(() => ownersIn(tickets).length, [tickets]);
 
-  // 2. Perform filtering based on the Mandatory support owner global filter
+  // 2. Filtro global: propietarios seleccionados y se excluyen los casos en estado cerrado
+  //    (aplica a KPIs, todas las gráficas, detalles y tablas)
   const filteredTickets = useMemo(() => {
     return tickets.filter(t => {
       const owner = t["Propietario de Ticket"] || "Sin Propietario";
-      return selectedOwners.includes(owner);
+      return selectedOwners.includes(owner) && !isClosed(t);
     });
   }, [tickets, selectedOwners]);
+
+  // Tickets de los propietarios seleccionados incluidos los cerrados (para «Tickets cerrados en la semana»
+  // y «Δ vs. semana anterior» del Reporte soporte semanal, cuando los datos cargados los traen)
+  const ownerTicketsAll = useMemo(
+    () => tickets.filter(t => selectedOwners.includes(t["Propietario de Ticket"] || "Sin Propietario")),
+    [tickets, selectedOwners]
+  );
 
   // SLA status statistics summary
   const totalBreaches = useMemo(() => {
@@ -154,6 +164,15 @@ export default function App() {
 
         {/* Actualización en vivo desde Zoho Desk */}
         <ZohoSyncPanel onDataLoaded={handleDataLoaded} lastSync={lastSync} syncing={syncing} setSyncing={setSyncing} />
+
+        {/* Exportación del Registro Semanal (estructura del Excel de seguimiento semanal de clientes) */}
+        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3" id="weekly-report-bar">
+          <div>
+            <h3 className="text-sm font-bold text-gray-900">Reporte soporte semanal</h3>
+            <p className="text-xs text-gray-500">Exporta a Excel la hoja «Registro Semanal» con la estructura de Seguimiento_Semanal_Clientes_ECS.</p>
+          </div>
+          <WeeklyReportButton tickets={ownerTicketsAll} />
+        </div>
 
         {/* Data Upload and Reset Actions */}
         <div className="grid grid-cols-1 gap-6">

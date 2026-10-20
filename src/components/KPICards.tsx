@@ -48,12 +48,12 @@ export function KPICards({ filteredTickets, onSelect }: KPICardsProps) {
 
   const cards = [
     {
-      title: "Total de Casos", value: stats.total, subtext: "Casos del informe (filtro aplicado)",
+      title: "Total de Casos", value: stats.total, subtext: "Casos no cerrados (filtro aplicado)",
       icon: FileText, colorClass: "border-l-4 border-[#005bbf]", iconBg: "bg-blue-50 text-[#005bbf]", isCritical: false,
       sel: { title: "Todos los casos", criteria: [{ dimension: "all" as const }] },
     },
     {
-      title: "Casos Abiertos", value: stats.openCount, subtext: `${stats.total - stats.openCount} cerrados`,
+      title: "Casos Abiertos", value: stats.openCount, subtext: "Casos cerrados excluidos del panel",
       icon: Activity, colorClass: "border-l-4 border-emerald-500", iconBg: "bg-emerald-50 text-emerald-600", isCritical: false,
       sel: { title: "Casos abiertos", criteria: [{ dimension: "open" as const }] },
     },

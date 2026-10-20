@@ -9,9 +9,11 @@ export const priorityOf = (t: TicketRecord) => t["Prioridad (Ticket)"] || "Sin P
 export const classificationOf = (t: TicketRecord) =>
   t["Clasificaciones"] || t["Categoria (Ticket)"] || "Sin Clasificación";
 
+/** Solo se consideran cerrados los estados «Cerrado» y «Cierre por Vencimiento» (mismo criterio del informe de Zoho).
+ *  Cualquier otro estado se cuenta en el dashboard. */
 export function isClosed(t: TicketRecord): boolean {
-  const s = (t["Estado (Ticket)"] || "").toLowerCase();
-  return ["cerr", "clos", "solv", "termin", "resuel", "done", "final", "cierre"].some(k => s.includes(k));
+  const s = (t["Estado (Ticket)"] || "").trim().toLowerCase();
+  return s === "cerrado" || s === "closed" || s.includes("cierre por vencimiento");
 }
 
 export function isCriticalOrHigh(t: TicketRecord): boolean {
@@ -133,3 +135,73 @@ export const lastFromOf = (t: TicketRecord) =>
   t["Último mensaje de"] === "Cliente" ? "Pendiente de ECS (escribió el cliente)"
   : t["Último mensaje de"] === "Agente" ? "Esperando al cliente (respondió ECS)"
   : "Sin dato";
+
+// ---------------------------------------------------------------------------
+// Casos sin atender: estado «Nuevo», sin primera respuesta, o el cliente escribió
+// y lleva más de PENDING_RESPONSE_HOURS horas sin respuesta de ECS.
+// ---------------------------------------------------------------------------
+export const PENDING_RESPONSE_HOURS = 4;
+
+export const isNewStatus = (t: TicketRecord) => statusOf(t).trim().toLowerCase() === "nuevo";
+
+/** Momento desde el que el caso espera respuesta de ECS (null si ECS respondió de último). */
+export function waitingSince(t: TicketRecord): Date | null {
+  if (isUnanswered(t)) return parseDate(t["Hora de creación (Ticket)"]);
+  if (t["Último mensaje de"] === "Cliente") {
+    return parseDate(t["Última respuesta del cliente"]) || parseDate(t["Última actividad"]);
+  }
+  if (isNewStatus(t)) return parseDate(t["Última actividad"]) || parseDate(t["Hora de creación (Ticket)"]);
+  return null;
+}
+
+/** Horas que lleva el caso sin respuesta de ECS desde la última respuesta (null si no aplica). */
+export function hoursWithoutResponse(t: TicketRecord, now = new Date()): number | null {
+  const d = waitingSince(t);
+  return d ? Math.max(0, (now.getTime() - d.getTime()) / 3600000) : null;
+}
+
+/** Motivos por los que un caso abierto se considera sin atender. */
+export function attentionReasons(t: TicketRecord, now = new Date()): string[] {
+  if (isClosed(t)) return [];
+  const reasons: string[] = [];
+  if (isNewStatus(t)) reasons.push("Estado Nuevo");
+  if (isUnanswered(t)) reasons.push("Sin 1ª respuesta");
+  else if (t["Último mensaje de"] === "Cliente") {
+    const h = hoursWithoutResponse(t, now);
+    if (h !== null && h >= PENDING_RESPONSE_HOURS) reasons.push(`Sin respuesta +${PENDING_RESPONSE_HOURS} h`);
+  }
+  return reasons;
+}
+
+export const needsAttention = (t: TicketRecord) => attentionReasons(t).length > 0;
+
+/** "35 min", "6 h", "3 d 4 h" */
+export function formatHours(h: number | null): string {
+  if (h === null) return "N/D";
+  if (h < 1) return `${Math.round(h * 60)} min`;
+  const d = Math.floor(h / 24);
+  const hr = Math.floor(h % 24);
+  return d ? `${d} d${hr ? ` ${hr} h` : ""}` : `${hr} h`;
+}
+
+// ---------------------------------------------------------------------------
+// Críticos/altos sin respuesta: llevan más de CRITICAL_RESPONSE_HOURS sin respuesta de ECS,
+// contadas desde la creación (si nunca se respondió) o desde el último mensaje del cliente.
+// ---------------------------------------------------------------------------
+export const CRITICAL_RESPONSE_HOURS = 1;
+
+/** Horas esperando respuesta de ECS (null si ECS respondió de último). */
+export function hoursAwaitingEcs(t: TicketRecord, now = new Date()): number | null {
+  let since: Date | null = null;
+  if (isUnanswered(t)) since = parseDate(t["Hora de creación (Ticket)"]);
+  else if (t["Último mensaje de"] === "Cliente") {
+    since = parseDate(t["Última respuesta del cliente"]) || parseDate(t["Última actividad"]);
+  }
+  return since ? Math.max(0, (now.getTime() - since.getTime()) / 3600000) : null;
+}
+
+export const isCriticalWithoutResponse = (t: TicketRecord, now = new Date()) => {
+  if (isClosed(t) || !isCriticalOrHigh(t)) return false;
+  const h = hoursAwaitingEcs(t, now);
+  return h !== null && h > CRITICAL_RESPONSE_HOURS;
+};

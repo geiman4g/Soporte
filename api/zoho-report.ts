@@ -24,38 +24,58 @@
 // type definition for optional records
 type AnyRecord = Record<string, any>;
 
-const env = (k: string, d = "") => (process.env[k] ?? d).trim();
+/** Lee una variable de entorno quitando espacios, saltos de línea y comillas que a veces se pegan por error en Vercel.
+ *  Si la variable está vacía se usa el valor por defecto. */
+/** Nombres alternativos que a veces se usan al crear las variables (p. ej. con prefijo VITE_). */
+const ENV_ALIASES: Record<string, string[]> = {
+  ZOHO_CLIENT_ID: ["VITE_ZOHO_CLIENT_ID", "ZOHO_CLIENTID", "ZOHO_CLIENT"],
+  ZOHO_CLIENT_SECRET: ["VITE_ZOHO_CLIENT_SECRET", "ZOHO_CLIENTSECRET", "ZOHO_SECRET"],
+  ZOHO_REFRESH_TOKEN: ["VITE_ZOHO_REFRESH_TOKEN", "ZOHO_REFRESHTOKEN", "ZOHO_TOKEN"],
+};
 
-const ORG_ID = () => env("ZOHO_ORG_ID", "749634105");
+/** Busca la variable sin importar mayúsculas/minúsculas ni espacios en el nombre. */
+function rawEnv(k: string): string | undefined {
+  for (const name of [k, ...(ENV_ALIASES[k] || [])]) {
+    if (process.env[name] !== undefined && String(process.env[name]).trim() !== "") return process.env[name];
+    const found = Object.keys(process.env).find(e => e.trim().toUpperCase() === name);
+    if (found && String(process.env[found]).trim() !== "") return process.env[found];
+  }
+  return undefined;
+}
+
+const env = (k: string, d = "") => {
+  const v = String(rawEnv(k) ?? "")
+    .replace(/[\r\n]/g, "")
+    .trim()
+    .replace(/^["']+|["']+$/g, "")
+    .trim();
+  return v || d;
+};
+
+const DEFAULT_ORG_ID = "749634105";
 const REPORT_ID = () => env("ZOHO_REPORT_ID", "601927000052419003");
-const ACCOUNTS = () => env("ZOHO_ACCOUNTS_URL", "https://accounts.zoho.com").replace(/\/$/, "");
-const DESK = () => env("ZOHO_DESK_URL", "https://desk.zoho.com").replace(/\/$/, "");
 const DEFAULT_ASSIGNEES =
   "601927000000179333,601927000012456045,601927000010019046,601927000000302301,601927000029805001," +
   "601927000048400324,601927000068336540,601927000000166186,601927000068414539,601927000068414521,601927000068414390";
 const TZ = "America/Bogota";
 
 // ---------------------------------------------------------------------------
-// OAuth
+// Conexión con Zoho (OAuth + centro de datos + organización)
 // ---------------------------------------------------------------------------
-let cachedToken: { value: string; exp: number } | null = null;
+/** Centros de datos de Zoho. Si el configurado no reconoce las credenciales, se prueban los demás. */
+const DATA_CENTERS = [".com", ".eu", ".in", ".com.au", ".jp", ".ca", ".sa", ".com.cn"];
+const stripSlash = (u: string) => u.replace(/\/+$/, "");
+const dcOf = (url: string) => {
+  const m = url.match(/zoho(\.[a-z.]+)/i);
+  return m ? m[1].toLowerCase() : ".com";
+};
 
-async function getAccessToken(): Promise<string> {
-  if (cachedToken && cachedToken.exp > Date.now() + 60_000) return cachedToken.value;
-  const body = new URLSearchParams({
-    refresh_token: env("ZOHO_REFRESH_TOKEN"),
-    client_id: env("ZOHO_CLIENT_ID"),
-    client_secret: env("ZOHO_CLIENT_SECRET"),
-    grant_type: "refresh_token",
-  });
-  const r = await fetch(`${ACCOUNTS()}/oauth/v2/token`, { method: "POST", body });
-  const j: AnyRecord = await r.json().catch(() => ({}));
-  if (!r.ok || !j.access_token) {
-    throw new HttpError(502, `No se pudo obtener el token de Zoho: ${j.error || r.status}`);
-  }
-  cachedToken = { value: j.access_token, exp: Date.now() + (Number(j.expires_in) || 3600) * 1000 };
-  return cachedToken.value;
-}
+let resolvedAccounts: string | null = null;
+let resolvedDesk: string | null = null;
+let resolvedOrg: string | null = null;
+
+const ORG_ID = () => resolvedOrg || env("ZOHO_ORG_ID", DEFAULT_ORG_ID);
+const DESK = () => resolvedDesk || stripSlash(env("ZOHO_DESK_URL", "https://desk.zoho.com"));
 
 class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -63,10 +83,120 @@ class HttpError extends Error {
   }
 }
 
-async function desk(path: string, token: string): Promise<{ status: number; json?: AnyRecord; text: string }> {
-  const r = await fetch(`${DESK()}${path}`, {
+let cachedToken: { value: string; exp: number } | null = null;
+let pendingToken: Promise<string> | null = null;
+
+function accountsCandidates(): string[] {
+  const explicit = stripSlash(env("ZOHO_ACCOUNTS_URL", "https://accounts.zoho.com"));
+  const all = [resolvedAccounts, explicit, ...DATA_CENTERS.map(dc => `https://accounts.zoho${dc}`)].filter(Boolean) as string[];
+  return [...new Set(all)];
+}
+
+/** Explica en español los errores que devuelve Zoho al renovar el token. */
+function tokenErrorMessage(err: string, desc: string): string {
+  const e = err.toLowerCase();
+  if (e === "invalid_client")
+    return "Zoho rechazó ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET (invalid_client). Verifica que ambos sean del mismo Self Client " +
+      "de api-console.zoho.com, que estén completos y sin espacios ni comillas.";
+  if (e === "invalid_code")
+    return "ZOHO_REFRESH_TOKEN no es válido, expiró o fue revocado (invalid_code). Genera un código nuevo en el Self Client " +
+      "y cámbialo por un refresh token (ver README).";
+  if (e === "access denied" || /too many requests/i.test(desc))
+    return "Zoho bloqueó temporalmente la renovación del token por demasiadas solicitudes. Espera unos minutos e intenta de nuevo.";
+  return `No se pudo obtener el token de Zoho: ${err || "error desconocido"}${desc ? ` (${desc})` : ""}`;
+}
+
+async function requestToken(accounts: string) {
+  const body = new URLSearchParams({
+    refresh_token: env("ZOHO_REFRESH_TOKEN"),
+    client_id: env("ZOHO_CLIENT_ID"),
+    client_secret: env("ZOHO_CLIENT_SECRET"),
+    grant_type: "refresh_token",
+  });
+  const r = await fetch(`${accounts}/oauth/v2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body: body.toString(),
+  });
+  const j: AnyRecord = await r.json().catch(() => ({}));
+  return { ok: r.ok && !!j.access_token, status: r.status, j };
+}
+
+async function refreshAccessToken(): Promise<string> {
+  let firstError: { err: string; desc: string; status: number } | null = null;
+  for (const accounts of accountsCandidates()) {
+    let res;
+    try {
+      res = await requestToken(accounts);
+    } catch {
+      continue; // centro de datos no alcanzable; se prueba el siguiente
+    }
+    if (res.ok) {
+      resolvedAccounts = accounts;
+      // La URL de Desk debe ser del mismo centro de datos que la cuenta
+      const explicitDesk = stripSlash(env("ZOHO_DESK_URL"));
+      resolvedDesk = explicitDesk && dcOf(explicitDesk) === dcOf(accounts)
+        ? explicitDesk
+        : `https://desk.zoho${dcOf(accounts)}`;
+      if (resolvedAccounts !== stripSlash(env("ZOHO_ACCOUNTS_URL", "https://accounts.zoho.com"))) {
+        console.warn(`[zoho] Credenciales válidas en ${accounts}; actualiza ZOHO_ACCOUNTS_URL y ZOHO_DESK_URL (${resolvedDesk}).`);
+      }
+      cachedToken = { value: res.j.access_token, exp: Date.now() + (Number(res.j.expires_in) || 3600) * 1000 };
+      return cachedToken.value;
+    }
+    const err = String(res.j.error || "");
+    const desc = String(res.j.error_description || "");
+    if (!firstError) firstError = { err, desc, status: res.status };
+    // Límite de solicitudes: no tiene sentido probar otros centros de datos
+    if (err.toLowerCase() === "access denied" || /too many requests/i.test(desc)) break;
+    // Solo estos errores pueden deberse a un centro de datos equivocado
+    if (!["invalid_client", "invalid_code"].includes(err.toLowerCase())) break;
+  }
+  const e = firstError || { err: "sin respuesta de Zoho", desc: "", status: 502 };
+  const tooMany = e.err.toLowerCase() === "access denied" || /too many requests/i.test(e.desc);
+  throw new HttpError(tooMany ? 429 : 502, tokenErrorMessage(e.err, e.desc));
+}
+
+/** Token de acceso con caché; si varias consultas llegan a la vez se renueva una sola vez. */
+async function getAccessToken(force = false): Promise<string> {
+  if (!force && cachedToken && cachedToken.exp > Date.now() + 60_000) return cachedToken.value;
+  if (!pendingToken) pendingToken = refreshAccessToken().finally(() => { pendingToken = null; });
+  return pendingToken;
+}
+
+/** Confirma el ID de organización de Zoho Desk (si el configurado no existe para esta cuenta, usa el disponible). */
+async function resolveOrgId(): Promise<string> {
+  if (resolvedOrg) return resolvedOrg;
+  const wanted = env("ZOHO_ORG_ID", DEFAULT_ORG_ID);
+  const token = await getAccessToken();
+  const r = await fetch(`${DESK()}/api/v1/organizations`, { headers: { Authorization: `Zoho-oauthtoken ${token}` } }).catch(() => null);
+  if (r && (r.status === 401 || r.status === 403)) {
+    const txt = await r.text().catch(() => "");
+    throw new HttpError(502,
+      `Zoho Desk rechazó el token (${r.status}). Revisa que el refresh token se haya generado con los alcances ` +
+      `Desk.tickets.READ,Desk.search.READ,Desk.basic.READ,Desk.settings.READ. ${txt.slice(0, 150)}`);
+  }
+  const j: AnyRecord = r ? await r.json().catch(() => ({})) : {};
+  const ids: string[] = (j.data || []).map((o: AnyRecord) => String(o.id));
+  if (ids.length && !ids.includes(wanted)) {
+    console.warn(`[zoho] ZOHO_ORG_ID=${wanted} no pertenece a esta cuenta; se usa ${ids[0]}.`);
+    resolvedOrg = ids[0];
+  } else {
+    resolvedOrg = wanted;
+  }
+  return resolvedOrg;
+}
+
+/** Llamada a la API de Zoho Desk. Si el token venció, se renueva y se reintenta una vez. */
+async function desk(path: string, _token?: string): Promise<{ status: number; json?: AnyRecord; text: string }> {
+  const call = async (token: string) => fetch(`${DESK()}${path}`, {
     headers: { Authorization: `Zoho-oauthtoken ${token}`, orgId: ORG_ID() },
   });
+  let r = await call(await getAccessToken());
+  if (r.status === 401) {
+    cachedToken = null;
+    r = await call(await getAccessToken(true));
+  }
   const text = await r.text();
   let json: AnyRecord | undefined;
   try {
@@ -321,6 +451,64 @@ async function fromTicketsApi(token: string) {
   return open.map((t, i) => enrich(buildRecordFromTicket(t, metrics[i] || {}), t));
 }
 
+/**
+ * Conteos de una semana (lunes a domingo, hora Bogotá) por cuenta, incluidos tickets ya cerrados:
+ *  - reportados: creados en la semana
+ *  - cerrados: con fecha de cierre dentro de la semana
+ */
+async function weekCounts(mondayYmd: string) {
+  const [y, mo, d] = mondayYmd.split("-").map(Number);
+  const start = new Date(Date.UTC(y, mo - 1, d, 5, 0, 0)); // 00:00 Bogotá
+  const end = new Date(start.getTime() + 7 * 86400000 - 1000);
+  const now = new Date();
+  const assignees = env("ZOHO_ASSIGNEE_IDS", DEFAULT_ASSIGNEES);
+
+  const search = async (rangeParam: string, from: Date, to: Date) => {
+    const out: AnyRecord[] = [];
+    const range = encodeURIComponent(`${from.toISOString()},${to.toISOString()}`);
+    for (let i = 0; i < 3000; i += 100) {
+      const r = await desk(`/api/v1/tickets/search?assigneeId=${assignees}&${rangeParam}=${range}&limit=100&from=${i}`);
+      if (r.status === 204) break;
+      if (r.status !== 200) throw new HttpError(502, `Zoho respondió ${r.status} al consultar la semana: ${r.text.slice(0, 200)}`);
+      const data: AnyRecord[] = r.json?.data || [];
+      out.push(...data);
+      if (data.length < 100) break;
+    }
+    return out;
+  };
+
+  const created = await search("createdTimeRange", start, end);
+  // Un ticket cerrado en la semana tiene modificación posterior al inicio de la semana
+  const modified = await search("modifiedTimeRange", start, end < now ? now : end);
+  const closed = modified.filter(t => {
+    const c = t.closedTime ? new Date(t.closedTime) : null;
+    return c && c >= start && c <= end;
+  });
+
+  const key = (t: AnyRecord) => {
+    const account = clean(t.contact?.account?.accountName) || "Sin Cuenta";
+    const owner = t.assignee ? [t.assignee.firstName, t.assignee.lastName].filter(Boolean).join(" ") : "";
+    return { account, owner, k: `${account}||${owner}` };
+  };
+  // closedPrev = cerrados en la semana que se crearon ANTES del lunes (estaban abiertos al cierre de la semana anterior)
+  const map = new Map<string, { account: string; owner: string; reported: number; closed: number; closedPrev: number }>();
+  const add = (t: AnyRecord, field: "reported" | "closed" | "closedPrev") => {
+    const { account, owner, k } = key(t);
+    if (!map.has(k)) map.set(k, { account, owner, reported: 0, closed: 0, closedPrev: 0 });
+    map.get(k)![field] += 1;
+  };
+  const seenCreated = new Set<string>();
+  created.forEach(t => { if (!seenCreated.has(t.id)) { seenCreated.add(t.id); add(t, "reported"); } });
+  const seenClosed = new Set<string>();
+  closed.forEach(t => {
+    if (seenClosed.has(t.id)) return;
+    seenClosed.add(t.id);
+    add(t, "closed");
+    if (t.createdTime && new Date(t.createdTime) < start) add(t, "closedPrev");
+  });
+  return [...map.values()];
+}
+
 function buildRecordFromTicket(t: AnyRecord, m: AnyRecord) {
   {
     const owner = t.assignee ? [t.assignee.firstName, t.assignee.lastName].filter(Boolean).join(" ") : "";
@@ -391,17 +579,50 @@ export default async function handler(req: any, res: any) {
         return res.status(401).json({ error: "Clave de acceso inválida o ausente.", code: "key" });
       }
     }
-    if (!env("ZOHO_CLIENT_ID") || !env("ZOHO_CLIENT_SECRET") || !env("ZOHO_REFRESH_TOKEN")) {
+    const missing = ["ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REFRESH_TOKEN"].filter(k => !env(k));
+    if (missing.length) {
       return res.status(500).json({
-        error: "Faltan las credenciales de Zoho (ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN) en las variables de entorno.",
+        error: `Faltan credenciales de Zoho en las variables de entorno: ${missing.join(", ")}. ` +
+          "En Vercel agrégalas en Settings → Environment Variables (marca Production) y luego haz Redeploy; " +
+          "en local, créalas en un archivo .env en la raíz del proyecto.",
+        // Diagnóstico (solo nombres, nunca valores)
+        entorno: process.env.VERCEL_ENV || (process.env.VERCEL ? "vercel" : "local"),
+        variablesZohoDetectadas: Object.keys(process.env).filter(k => /zoho/i.test(k)),
       });
     }
 
     const token = await getAccessToken();
+    const orgId = await resolveOrgId();
+
+    // Diagnóstico de la conexión: /api/zoho-report?check=1
+    const query = req.query || Object.fromEntries(new URL(req.url || "/", "http://x").searchParams);
+    if (query.check) {
+      return res.status(200).json({
+        ok: true,
+        accountsUrl: resolvedAccounts,
+        deskUrl: DESK(),
+        orgId,
+        reportId: REPORT_ID(),
+        mensaje: "Conexión con Zoho Desk correcta.",
+      });
+    }
+
+    // Conteos semanales para el reporte "Registro Semanal": /api/zoho-report?week=YYYY-MM-DD (lunes)
+    if (query.week) {
+      const week = String(query.week);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(week)) return res.status(400).json({ error: "Parámetro week inválido (YYYY-MM-DD)." });
+      return res.status(200).json({ week, accounts: await weekCounts(week) });
+    }
+
     let source = "report";
-    let tickets = await fromSavedReport(token).catch(() => null);
+    let fallbackReason = "";
+    let tickets = await fromSavedReport(token).catch((e: any) => {
+      fallbackReason = e?.message || "error al exportar el informe";
+      return null;
+    });
     if (!tickets) {
       source = "tickets-api";
+      if (!fallbackReason) fallbackReason = "La API de informes no devolvió datos para este token.";
       tickets = await fromTicketsApi(token);
     }
 
@@ -409,12 +630,14 @@ export default async function handler(req: any, res: any) {
       reportName: "Reporte Semanal Soporte - Gerentes de cuenta",
       reportId: REPORT_ID(),
       source,
+      ...(fallbackReason ? { fallbackReason } : {}),
       fetchedAt: new Date().toISOString(),
       count: tickets.length,
       tickets,
     });
   } catch (err: any) {
     const status = err instanceof HttpError ? err.status : 500;
+    console.error("[zoho-report]", err);
     return res.status(status).json({ error: err?.message || "Error desconocido al consultar Zoho Desk." });
   }
 }

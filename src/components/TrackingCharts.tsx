@@ -84,11 +84,11 @@ export function TrackingCharts({ filteredTickets, onSelect }: Props) {
       .sort((a, b) => statusRank(a.name) - statusRank(b.name) || b.value - a.value);
   }, [filteredTickets, total]);
 
-  // 2. Carga por propietario apilada por estado
+  // 2. Carga por propietario apilada por estado (excluye casos cerrados)
   const { ownerData, ownerStatuses } = useMemo(() => {
-    const statuses = statusData.map(s => s.name);
+    const statuses = statusData.map(s => s.name).filter(name => !isClosed({ "Estado (Ticket)": name } as TicketRecord));
     const byOwner = new Map<string, Record<string, any>>();
-    filteredTickets.forEach(t => {
+    openTickets.forEach(t => {
       const o = ownerOf(t);
       if (!byOwner.has(o)) byOwner.set(o, { name: o, total: 0 });
       const row = byOwner.get(o)!;
@@ -96,7 +96,7 @@ export function TrackingCharts({ filteredTickets, onSelect }: Props) {
       row.total += 1;
     });
     return { ownerData: [...byOwner.values()].sort((a, b) => b.total - a.total), ownerStatuses: statuses };
-  }, [filteredTickets, statusData]);
+  }, [openTickets, statusData]);
 
   // 3. Antigüedad (casos abiertos)
   const ageData = useMemo(() => {
@@ -201,14 +201,14 @@ export function TrackingCharts({ filteredTickets, onSelect }: Props) {
           </div>
         </Card>
 
-        <Card icon={Users} title="Carga por Propietario y Estado" subtitle="Clic en un segmento: propietario + estado · clic en el nombre: todos sus casos" accent="bg-indigo-50 text-indigo-600">
+        <Card icon={Users} title="Carga por Propietario y Estado" subtitle="Solo casos no cerrados · clic en un segmento: propietario + estado · clic en el nombre: sus casos abiertos" accent="bg-indigo-50 text-indigo-600">
           <div style={{ height: ownerHeight }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={ownerData} layout="vertical" margin={{ top: 0, right: 30, left: 8, bottom: 0 }} barCategoryGap={5}>
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f3f5" />
                 <XAxis type="number" allowDecimals={false} tick={{ fontSize: 9 }} stroke="#888" />
                 <YAxis type="category" dataKey="name" width={150} tick={{ fontSize: 10, cursor: "pointer" }} stroke="#888"
-                  onClick={(e: any) => e?.value && onSelect({ title: `Propietario: ${e.value}`, criteria: [{ dimension: "owner", value: e.value }] })} />
+                  onClick={(e: any) => e?.value && onSelect({ title: `Propietario: ${e.value} · Abiertos`, criteria: [{ dimension: "owner", value: e.value }, { dimension: "open" }] })} />
                 <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItem} cursor={{ fill: "#f1f5f9" }} />
                 <Legend wrapperStyle={{ fontSize: "9px" }} iconSize={8} />
                 {ownerStatuses.map((s, i) => (

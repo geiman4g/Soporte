@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Users, Check, Square, CheckSquare, SlidersHorizontal, Info } from "lucide-react";
 import { TicketRecord } from "../types";
+import { isClosed } from "../utils/ticketHelpers";
 
 interface FilterSectionProps {
   tickets: TicketRecord[];
@@ -11,12 +12,13 @@ interface FilterSectionProps {
 export function FilterSection({ tickets, selectedOwners, onChangeSelectedOwners }: FilterSectionProps) {
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Extract unique owners and count their occurrences in the full dataset
+  // Propietarios y cantidad de casos asignados, excluyendo los casos en estado cerrado
   const ownersWithCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     tickets.forEach(t => {
       const owner = t["Propietario de Ticket"] || "Sin Propietario";
-      counts[owner] = (counts[owner] || 0) + 1;
+      if (!(owner in counts)) counts[owner] = 0;
+      if (!isClosed(t)) counts[owner] += 1;
     });
 
     return Object.entries(counts)
@@ -64,7 +66,7 @@ export function FilterSection({ tickets, selectedOwners, onChangeSelectedOwners 
               </span>
             </h3>
             <p className="text-xs text-gray-500">
-              Selecciona uno o varios grupos de soporte para filtrar todo el panel.
+              Selecciona uno o varios grupos de soporte para filtrar todo el panel. El número indica los casos asignados no cerrados.
             </p>
           </div>
         </div>

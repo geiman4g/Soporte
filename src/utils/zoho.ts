@@ -142,3 +142,18 @@ export function normalizeSla(v: any): string {
   if (s.includes("response")) return "Respuesta vencida";
   return clean(v);
 }
+
+// ---------------------------------------------------------------------------
+// Conteos semanales (tickets reportados y cerrados en la semana, incluidos los ya cerrados)
+// ---------------------------------------------------------------------------
+export async function fetchWeekCounts(mondayYmd: string): Promise<{ account: string; owner: string; reported: number; closed: number; closedPrev?: number }[]> {
+  const url = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/zoho-report?week=${encodeURIComponent(mondayYmd)}`;
+  let idToken = "";
+  try { idToken = await getIdToken(); } catch { /* sin sesión de Microsoft */ }
+  const headers: Record<string, string> = { "x-dashboard-key": getAccessKey() };
+  if (idToken) headers.Authorization = `Bearer ${idToken}`;
+  const res = await fetch(url, { headers, cache: "no-store" });
+  const body = await res.json().catch(() => ({} as any));
+  if (!res.ok || !Array.isArray(body.accounts)) throw new ZohoSyncError(body?.error || `Error ${res.status}`, res.status);
+  return body.accounts;
+}
